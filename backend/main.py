@@ -10,27 +10,14 @@ client = groq.Client(api_key=os.environ.get("GROQ_API_KEY"))
 async def reason_about_screen(request: Request):
     data = await request.json()
     screen_content = data.get("screen_text")
-    
-    chat_completion = client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": "You are the Phone Doctor with Manufacturer Authority. Diagnose device health, identify locks, and suggest triage actions. You have deep system access (ADB/SU). Suggest low-level commands to bypass restrictions where possible."},
-            {"role": "user", "content": f"Screen content: {screen_content}"}
-        ],
-        model="llama3-70b-8192",
-    )
-    return {"action": chat_completion.choices[0].message.content}
-
-@app.post("/vision")
-async def reason_about_screenshot(request: Request):
-    data = await request.json()
-    image_b64 = data.get("image_base64")
-    context = data.get("context", "")
+    user_task = data.get("task", "Diagnose and fix the current issue")
 
     chat_completion = client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "You are the Phone Doctor with Vision and Manufacturer Authority. Analyze the screenshot and decide the next action. You have full system control."},
-            {"role": "user", "content": f"Context: {context}
-Image (base64): {image_b64}"}
+            {"role": "system", "content": "You are bizzy, the Phone Doctor. Analyze the screen and return JSON action: {type: tap/swipe/type/call/sms/adb, params: {x, y, text, number, message, command}}. Be deterministic."},
+            {"role": "user", "content": f"Task: {user_task}
+Screen:
+{screen_content}"}
         ],
         model="llama3-70b-8192",
     )
@@ -38,9 +25,44 @@ Image (base64): {image_b64}"}
 
 @app.post("/execute")
 async def execute_authority_command(request: Request):
-    # Manufacturer-level execution endpoint
     data = await request.json()
     command = data.get("command")
-    # Only allow safe manufacturer-level diagnostic/access commands
     result = subprocess.run(["adb", "shell", command], capture_output=True, text=True)
     return {"stdout": result.stdout, "stderr": result.stderr}
+
+@app.post("/command/call")
+async def queue_call(request: Request):
+    data = await request.json()
+    number = data.get("number")
+    if not number: return {"error": "No number"}
+    result = subprocess.run([
+        "adb", "shell", "am", "broadcast", "-a", "com.bot.COMMAND",
+        "--es", "command", "call", "--es", "number", number
+    ], capture_output=True, text=True)
+    return {"status": "dialing", "out": result.stdout}
+
+@app.post("/command/sms")
+async def queue_sms(request: Request):
+    data = await request.json()
+    number = data.get("number")
+    msg = data.get("message")
+    if not number or not msg: return {"error": "Missing params"}
+    result = subprocess.run([
+        "adb", "shell", "am", "broadcast", "-a", "com.bot.COMMAND",
+        "--es", "command", "sms", "--es", "number", number, "--es", "message", msg
+    ], capture_output=True, text=True)
+    return {"status": "sent", "out": result.stdout}
+
+@app.post("/command/clean")
+async def deep_clean(request: Request):
+    # Manufacturer-level autonomous healing sequence
+    commands = [
+        "pm trim-caches 999G",
+        "rm -rf /data/local/tmp/*",
+        "sm fstrim"
+    ]
+    outs = []
+    for cmd in commands:
+        r = subprocess.run(["adb", "shell", cmd], capture_output=True, text=True)
+        outs.append(r.stdout)
+    return {"status": "cleaned", "details": outs}
