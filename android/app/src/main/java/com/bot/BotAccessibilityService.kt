@@ -2,8 +2,11 @@ package com.bot
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Path
+import android.net.Uri
 import android.os.Bundle
+import android.telephony.SmsManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.*
@@ -69,6 +72,28 @@ class BotAccessibilityService : AccessibilityService() {
             "type"   -> typeText(action.optString("value"))
             "scroll" -> scrollScreen()
             "swipe"  -> swipeScreen()
+            "call"   -> {
+                val number = action.optString("number")
+                if (number.isNotBlank()) {
+                    val intent = Intent(Intent.ACTION_CALL).apply {
+                        data = Uri.parse("tel:$number")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                }
+            }
+            "sms"    -> {
+                val number = action.optString("number")
+                val message = action.optString("message")
+                if (number.isNotBlank() && message.isNotBlank()) {
+                    try {
+                        val smsManager = getSystemService(SmsManager::class.java)
+                        smsManager.sendTextMessage(number, null, message, null, null)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
         }
     }
 
