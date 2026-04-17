@@ -6,130 +6,101 @@ import android.content.Intent
 import android.graphics.Path
 import android.net.Uri
 import android.os.Bundle
-import android.telephony.SmsManager
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.*
-import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 class BotAccessibilityService : AccessibilityService() {
 
-    // 🔧 Swap this in once Render gives you the URL
-    private val BACKEND_URL = "https://YOUR_RENDER_URL.onrender.com"
-
-    private val http = OkHttpClient()
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val httpClient = OkHttpClient()
+    private val scope = CoroutineScope(Dispatchers.IO + Job())
+    private val renderUrl = "https://phone-man-idi3.onrender.com"
+    var currentTask: String = "Monitor and fix screen issues"
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val rootNode = rootInActiveWindow ?: return
-        val screenText = extractText(rootNode)
-        if (screenText.isBlank()) return
+        val screenText = buildString {
+            fun scrape(node: AccessibilityNodeInfo) {
+                if (!node.text.isNullOrBlank()) appendLine(node.text)
+                for (i in 0 until node.childCount) {
+                    node.getChild(i)?.let { scrape(it) }
+                }
+            }
+            scrape(rootNode)
+        }
 
         scope.launch {
             try {
-                val action = reasonAboutScreen(screenText)
+                val body = JSONObject().apply {
+                    put("screen_text", screenText)
+                    put("task", currentTask)
+                }.toString().toRequestBody("application/json".toMediaType())
+
+                val request = Request.Builder()
+                    .url("$renderUrl/reason")
+                    .post(body)
+                    .build()
+
+                val resp = httpClient.newCall(request).execute()
+                val responseBody = resp.body?.string() ?: return@launch
+                val actionJson = JSONObject(JSONObject(responseBody).getString("action"))
+
                 withContext(Dispatchers.Main) {
-                    executeAction(action)
+                    when (actionJson.getString("type")) {
+                        "tap" -> performTap(actionJson.getDouble("x").toFloat(), actionJson.getDouble("y").toFloat())
+                        "type" -> performType(actionJson.getString("text"))
+                        "call" -> makeCall(actionJson.getString("number"))
+                        "sms" -> sendSms(actionJson.getString("number"), actionJson.getString("text"))
+                    }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("bizzy", "Processing loop error: ${e.message}")
             }
         }
     }
 
-    private fun extractText(node: AccessibilityNodeInfo): String {
-        val sb = StringBuilder()
-        if (!node.text.isNullOrBlank()) sb.appendLine(node.text)
-        if (!node.contentDescription.isNullOrBlank()) sb.appendLine(node.contentDescription)
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { sb.append(extractText(it)) }
-        }
-        return sb.toString()
-    }
-
-    private fun reasonAboutScreen(screenText: String): JSONObject {
-        val body = JSONObject().put("screen_text", screenText)
-            .toString()
-            .toRequestBody("application/json".toMediaType())
-
-        val request = Request.Builder()
-            .url("$BACKEND_URL/reason")
-            .post(body)
-            .build()
-
-        val response = http.newCall(request).execute()
-        val raw = response.body?.string() ?: "{}"
-        val outer = JSONObject(raw)
-        return JSONObject(outer.getString("action"))
-    }
-
-    private fun executeAction(action: JSONObject) {
-        when (action.optString("type")) {
-            "click"  -> clickOnText(action.optString("target"))
-            "type"   -> typeText(action.optString("value"))
-            "scroll" -> scrollScreen()
-            "swipe"  -> swipeScreen()
-            "call"   -> {
-                val number = action.optString("number")
-                if (number.isNotBlank()) {
-                    val intent = Intent(Intent.ACTION_CALL).apply {
-                        data = Uri.parse("tel:$number")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(intent)
-                }
-            }
-            "sms"    -> {
-                val number = action.optString("number")
-                val message = action.optString("message")
-                if (number.isNotBlank() && message.isNotBlank()) {
-                    try {
-                        val smsManager = getSystemService(SmsManager::class.java)
-                        smsManager.sendTextMessage(number, null, message, null, null)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-        }
-    }
-
-    private fun clickOnText(target: String) {
-        val root = rootInActiveWindow ?: return
-        root.findAccessibilityNodeInfosByText(target)
-            ?.firstOrNull()
-            ?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-    }
-
-    private fun typeText(text: String) {
-        val root = rootInActiveWindow ?: return
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return
-        val args = Bundle()
-        args.putCharSequence(
-            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text
-        )
-        focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-    }
-
-    private fun scrollScreen() {
-        performGlobalAction(GLOBAL_ACTION_BACK)
-    }
-
-    private fun swipeScreen() {
-        val path = Path().apply {
-            moveTo(500f, 1500f)
-            lineTo(500f, 500f)
-        }
+    private fun performTap(x: Float, y: Float) {
+        val path = Path()
+        path.moveTo(x, y)
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
             .build()
         dispatchGesture(gesture, null, null)
     }
 
-    override fun onInterrupt() {
+    private fun performType(text: String) {
+        val args = Bundle()
+        args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        rootInActiveWindow?.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    private fun makeCall(number: String) {
+        val intent = Intent(Intent.ACTION_CALL).apply {
+            data = Uri.parse("tel:$number")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    private fun sendSms(number: String, message: String) {
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse("smsto:$number")
+            putExtra("sms_body", message)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    override fun onInterrupt() {}
+
+    override fun onDestroy() {
+        super.onDestroy()
         scope.cancel()
     }
 }
